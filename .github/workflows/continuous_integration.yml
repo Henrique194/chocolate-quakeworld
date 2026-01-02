@@ -1,0 +1,138 @@
+name: Continuous Integration
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**.md"
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - "**.md"
+  workflow_dispatch:
+
+jobs:
+  job:
+    name: ${{ matrix.config.name }} ${{ matrix.buildtype.name }}
+    runs-on: ${{ matrix.config.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        buildtype:
+          - name: release
+            path: Release
+          - name: debug
+            path: Debug
+
+        config:
+          - name: Windows x64
+            os: windows-latest
+            triplet: x64-mingw-dynamic
+            platform: x64
+
+          - name: Windows x86
+            os: windows-latest
+            triplet: x86-mingw-dynamic
+            platform: x86
+
+          - name: macOS arm64
+            os: macos-15
+            triplet: arm64-osx
+
+          - name: macOS x64
+            os: macos-15-intel
+            triplet: x64-osx
+
+          - name: Ubuntu
+            os: ubuntu-24.04
+            triplet: x64-linux
+
+    env:
+      VCPKG_DEFAULT_TRIPLET: ${{ matrix.config.triplet }}
+      VCPKG_DEFAULT_HOST_TRIPLET: ${{ matrix.config.triplet }}
+      BUILD_DIR_SERVER: cmake-build-${{ matrix.buildtype.name }}/src/server/${{ matrix.buildtype.path }}
+      BUILD_DIR_CLIENT: cmake-build-${{ matrix.buildtype.name }}/src/client/${{ matrix.buildtype.path }}
+      ARTIFACT_DIR: artifact
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - name: Install required system packages (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libvorbis-dev \
+            libmad0-dev \
+            libflac-dev \
+            libsdl2-dev \
+            libsdl2-net-dev
+
+      - name: Set up CMake build preset
+        shell: bash
+        run: |
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            export "CMAKE_PRESET=${{ matrix.buildtype.name }}"
+          else
+            export "CMAKE_PRESET=${{ matrix.buildtype.name }}-vcpkg"
+          fi
+          echo "Using preset ${CMAKE_PRESET}."
+          echo "CMAKE_PRESET=${CMAKE_PRESET}" >> $GITHUB_ENV
+
+      - name: Set up MinGW (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          if [ "${{ matrix.config.platform }}" == "x86" ]; then
+            echo "C:/mingw32/bin" >> $GITHUB_PATH
+            echo "MINGW_PATH=C:/mingw32/bin" >> $GITHUB_ENV
+          else
+            echo "MINGW_PATH=C:/mingw64/bin" >> $GITHUB_ENV
+          fi
+          echo "CC=gcc" >> $GITHUB_ENV
+          echo "CXX=g++" >> $GITHUB_ENV
+
+      - name: Set up CMake
+        uses: lukka/get-cmake@latest
+
+      - name: Set up vcpkg
+        if: runner.os == 'Windows'
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: '${{ github.workspace }}/external/vcpkg'
+
+      - name: Build
+        uses: lukka/run-cmake@v10
+        with:
+          configurePreset: ${{ env.CMAKE_PRESET }}
+          buildPreset: ${{ env.CMAKE_PRESET }}
+          configurePresetAdditionalArgs: "['-DVCPKG_TARGET_TRIPLET=${{ matrix.config.triplet }}']"
+
+      - name: Prepare artifact directory
+        shell: bash
+        run: |
+          mkdir $ARTIFACT_DIR
+          cp -r $BUILD_DIR_SERVER/* $ARTIFACT_DIR/
+          cp -r $BUILD_DIR_CLIENT/* $ARTIFACT_DIR/
+
+      - name: Copy MinGW DLLs (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          if [ "${{ matrix.config.platform }}" == "x86" ]; then
+            cp $MINGW_PATH/libgcc_s_dw2-1.dll $ARTIFACT_DIR
+          else
+            cp $MINGW_PATH/libgcc_s_seh-1.dll $ARTIFACT_DIR
+          fi
+          cp $MINGW_PATH/libwinpthread-1.dll $ARTIFACT_DIR
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.config.name }}-${{ matrix.buildtype.name }}
+          path: ${{ env.ARTIFACT_DIR }}
