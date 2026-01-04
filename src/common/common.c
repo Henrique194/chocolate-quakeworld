@@ -1860,7 +1860,9 @@ void Info_RemoveKey(char* s, char* key) {
         *o = 0;
 
         if (!strcmp(key, pkey)) {
-            strcpy(start, s); // remove this part
+	        size_t s_length = strlen(s);
+	        memmove(start, s, s_length);
+	        start[s_length] = '\0';
             return;
         }
 
